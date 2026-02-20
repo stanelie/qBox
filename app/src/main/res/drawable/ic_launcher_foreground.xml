@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Foreground layer sits within the central 72x72dp safe zone of the 108x108dp canvas -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!--
+        Q drawn as paths, centered on 108x108 canvas.
+        The outer circle radius is 34, the inner 22, giving a thick ring.
+        The tail is a short diagonal bar at bottom-right extending outside the ring.
+        All coordinates are designed to sit well within the 72dp safe zone (18..90).
+    -->
+
+    <!-- Outer ring of Q (donut shape = outer circle minus inner circle via even-odd fill) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="
+            M54,20
+            a34,34 0 1,1 -0.001,0
+            Z
+            M54,32
+            a22,22 0 1,0 0.001,0
+            Z
+        "/>
+
+    <!-- Q tail — thick diagonal stroke from inside-bottom-right to outside-bottom-right -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="
+            M62,65
+            L74,77
+            L69,82
+            L57,70
+            Z
+        "/>
+</vector>
