@@ -90,8 +90,11 @@ class QlabManager {
 
     private var lastMessageTime = 0L
     private var currentWorkspaceId: String? = null
-    private var qlabMajorVersion: Int = 4  // default to 4 (poll mode)
+    private var qlabMajorVersion: Int = 4
     private val pendingLevelCallbacks = mutableMapOf<String, (Float) -> Unit>()
+
+    private val _isRunning = MutableStateFlow(false)
+    val isRunning = _isRunning.asStateFlow()
 
     // Dedicated thread for real-time fader sends — bypasses coroutine scheduler entirely
     private val faderThread = HandlerThread("fader-osc").also { it.start() }
@@ -99,23 +102,23 @@ class QlabManager {
     // Holds the latest pending level send; atomic so UI thread can update without locking
     private val pendingFaderSend = AtomicReference<Triple<String, String, Float>?>(null)
     private var hasReceivedAnyResponse = false
-    private var currentPassword: String? = null
 
     private var qlabAddress: InetAddress? = null
     private var sendPort = 53000
     private var receivePort = 53001
 
     private val cueListCache = mutableMapOf<String, List<Cue>>()
-    private val cueListOrder = mutableListOf<CueList>()
     private val groupCueListMap = mutableMapOf<String, String>()
 
     fun connect(ip: String, port: Int, password: String?) {
         Log.d("QlabManager", "connect() called: ip=$ip port=$port password=${if (password.isNullOrEmpty()) "(none)" else "(set)"}")
+        // Set CONNECTING on the calling thread, then yield so Compose can render one frame
+        // before we start the IO work — otherwise the blue blink never appears
+        _connectionState.value = ConnectionState.CONNECTING
+        _connectionError.value = null
         scope.launch {
             try {
-                _connectionState.value = ConnectionState.CONNECTING
-                _connectionError.value = null
-                disconnectInternal()
+                disconnectInternal(resetState = false)
 
                 withContext(Dispatchers.IO) {
                     Log.d("QlabManager", "Resolving hostname: $ip")
@@ -126,7 +129,6 @@ class QlabManager {
                     Log.d("QlabManager", "Socket bound OK on port $receivePort | Will send to ${qlabAddress?.hostAddress}:$sendPort")
                 }
 
-                _isConnected.value = true
                 lastMessageTime = System.currentTimeMillis()
 
                 startReceiving()
@@ -174,14 +176,13 @@ class QlabManager {
                 _connectionState.value = ConnectionState.ERROR_TIMEOUT
                 _connectionError.value = "No response from ${qlabAddress?.hostAddress} after 2s. Check that QLab is open, OSC is enabled in Workspace Settings, and the IP is correct."
                 disconnectInternal()
-            } else {
-                Log.d("QlabManager", "Timeout check passed — response was received OK")
             }
         }
     }
 
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
+        _isConnected.value = true
         _connectionState.value = ConnectionState.CONNECTED
         _connectionError.value = null
         heartbeatJob = scope.launch {
@@ -213,12 +214,9 @@ class QlabManager {
                 while (isActive) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     withContext(Dispatchers.IO) { s.receive(packet) }
-                    Log.d("QlabManager", "Raw packet received: ${packet.length} bytes from ${packet.address?.hostAddress}:${packet.port}")
 
                     if (!hasReceivedAnyResponse) {
                         hasReceivedAnyResponse = true
-                        Log.d("QlabManager", "First response received — starting heartbeat")
-                        startHeartbeat()
                     }
 
                     val data = packet.data.copyOfRange(0, packet.length)
@@ -230,8 +228,6 @@ class QlabManager {
                     _connectionState.value = ConnectionState.ERROR_NETWORK
                     _connectionError.value = "Network error: ${e.message}. Tap to reconnect."
                     _isConnected.value = false
-                } else {
-                    Log.d("QlabManager", "startReceiving stopped (coroutine cancelled)")
                 }
             }
         }
@@ -283,10 +279,16 @@ class QlabManager {
                 }
             }
             handleParsedMessage(address, args)
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
     }
 
     private fun handleParsedMessage(address: String, arguments: List<Any>) {
+        // Cue state change notifications arrive with NO arguments — handle before the isNotEmpty check
+        // Must start with /update/ (not /reply/) to avoid feedback loop
+        if (address.startsWith("/update/") && address.contains("/cue_id/") && !address.contains("playbackPosition")) {
+            pollRunningCues()
+            return
+        }
         if (arguments.isNotEmpty()) {
             val raw = arguments[0]
             val json = when (raw) {
@@ -298,7 +300,6 @@ class QlabManager {
                 processJsonResponse(address, json)
             } else if (address.contains("playbackPosition")) {
                 val arg = arguments.firstOrNull() as? String
-                Log.d("QlabManager", "playbackPosition (raw OSC) address=$address arg=$arg qlabMajor=$qlabMajorVersion")
                 if (!arg.isNullOrEmpty()) {
                     if (qlabMajorVersion >= 5) {
                         // QLab 5 pushes the unique ID directly
@@ -306,7 +307,6 @@ class QlabManager {
                     } else {
                         if (address.startsWith("/update/")) {
                             // Push notification: arg is the unique ID directly
-                            Log.d("QlabManager", "playbackPosition push update: id=$arg")
                             _selectedCueId.value = arg
                         } else {
                             // Poll reply: arg is the cue number — resolve via cache
@@ -316,7 +316,6 @@ class QlabManager {
                             val cueList = cueListCache[cueListId]
                             val match = cueList?.firstOrNull { it.number == arg && it.number.isNotEmpty() }
                                 ?: cueList?.firstOrNull { it.id == arg }
-                            Log.d("QlabManager", "playbackPosition poll raw: cueListId=$cueListId arg=$arg -> id=${match?.id}")
                             if (match != null) _selectedCueId.value = match.id
                         }
                     }
@@ -327,7 +326,6 @@ class QlabManager {
 
     private fun processJsonResponse(address: String, json: String) {
         try {
-            Log.d("QlabManager", "Reply address: $address | data: ${json.take(200)}")
             val reply: QlabReply = gson.fromJson(json, QlabReply::class.java)
             if (reply.status == "denied") {
                 _connectionState.value = ConnectionState.ERROR_DENIED
@@ -342,7 +340,6 @@ class QlabManager {
                     val modeInt = reply.data?.asInt
                     // QLab 4 group modes: 0=sequential, 1=timeline (simultaneous+timeline), 2=random, 3=start all simultaneously
                     val groupMode = when (modeInt) { 3 -> "simultaneous"; 2 -> "random"; 1 -> "timeline"; else -> "sequential" }
-                    Log.d("QlabManager", "MODE REPLY cueId=$cueId | raw modeInt=$modeInt | resolved groupMode=$groupMode | full data=${reply.data}")
                     val cueListId = groupCueListMap[cueId] ?: run {
                         Log.w("QlabManager", "MODE REPLY: cueId=$cueId not found in groupCueListMap (keys=${groupCueListMap.keys})")
                         return
@@ -359,10 +356,21 @@ class QlabManager {
                     val cueListId = address.substringAfter("/cue_id/").substringBefore("/children")
                     handleCueListChildren(cueListId, reply.data)
                 }
+                address.contains("runningOrPausedCues") -> {
+                    val running = reply.data?.isJsonArray == true && reply.data.asJsonArray.size() > 0
+                    _isRunning.value = running
+                    // If still running, schedule a follow-up poll to catch cues that finish
+                    // too quickly to send a stop notification (e.g. empty audio cues)
+                    if (running) {
+                        scope.launch {
+                            delay(300)
+                            pollRunningCues()
+                        }
+                    }
+                }
                 address.contains("sliderLevel") -> {
                     val db = reply.data?.let { if (it.isJsonPrimitive) it.asFloat else null }
                     val cueId = address.substringAfter("cue_id/").substringBefore("/sliderLevel")
-                    Log.d("QlabManager", "sliderLevel reply: cueId=$cueId db=$db")
                     if (db != null) {
                         pendingLevelCallbacks.remove(cueId)?.invoke(db)
                     }
@@ -371,7 +379,6 @@ class QlabManager {
                     // QLab poll reply: data is the cue NUMBER (e.g. "6")
                     // Resolve to unique ID via cache
                     val pos = reply.data?.let { if (it.isJsonPrimitive) it.asString else null }
-                    Log.d("QlabManager", "playbackPosition (JSON poll reply) address=$address pos='$pos'")
                     if (!pos.isNullOrEmpty()) {
                         val cueListId = address
                             .removePrefix("/reply/")
@@ -381,7 +388,6 @@ class QlabManager {
                         // Number match first, then fall back to unique ID (for unnumbered cues)
                         val match = cueList?.firstOrNull { it.number == pos && it.number.isNotEmpty() }
                             ?: cueList?.firstOrNull { it.id == pos }
-                        Log.d("QlabManager", "playbackPosition lookup: cueListId=$cueListId pos=$pos -> id=${match?.id}")
                         if (match != null) _selectedCueId.value = match.id
                     }
                 }
@@ -408,13 +414,20 @@ class QlabManager {
                         Log.d("QlabManager", "QLab version: $versionString -> major=$qlabMajorVersion")
                         if (id != null) {
                             currentWorkspaceId = id
+                            // Access confirmed — safe to mark as connected now
+                            startHeartbeat()
                             sendUdpMessage("/workspace/$id/updates", listOf(1))
                             sendUdpMessage("/workspace/$id/cueLists")
                         }
+                    } else {
+                        // Empty workspace list = OSC access denied or no open workspace
+                        _connectionState.value = ConnectionState.ERROR_DENIED
+                        _connectionError.value = "QLab denied access or no workspace is open. Enable OSC access in QLab's Workspace Settings."
+                        scope.launch { disconnectInternal() }
                     }
                 }
             }
-        } catch (e: Exception) {}
+        } catch (_: Exception) {}
     }
 
     private fun handleCueListChildren(cueListId: String, data: JsonElement?) {
@@ -433,14 +446,12 @@ class QlabManager {
             return
         }
         val groupCues = cuesForList.filter { it.isGroup }
-        Log.d("QlabManager", "Requesting mode for ${groupCues.size} group cues in cueList=$cueListId: ${groupCues.map { it.id + "(" + it.name + ")" }}")
         groupCues.forEach { cue ->
             sendUdpMessage("/workspace/$wsId/cue_id/${cue.id}/mode")
         }
 
         // Request the current playback position for this cue list so the playhead
         // is correct immediately after connecting, without waiting for QLab to move
-        Log.d("QlabManager", "Requesting playbackPosition for cueList=$cueListId")
         sendUdpMessage("/workspace/$wsId/cue_id/$cueListId/playbackPosition")
     }
 
@@ -479,7 +490,6 @@ class QlabManager {
             }
             try {
                 val oscData = encodeOscMessage(address, arguments)
-                Log.d("QlabManager", "Sending OSC: $address args=$arguments (${oscData.size} bytes) -> ${addr.hostAddress}:$sendPort")
                 val packet = DatagramPacket(oscData, oscData.size, addr, sendPort)
                 withContext(Dispatchers.IO) { s.send(packet) }
             } catch (e: Exception) {
@@ -508,6 +518,11 @@ class QlabManager {
     }
 
     // --- UI HELPER METHODS ---
+    private fun pollRunningCues() {
+        val wsId = currentWorkspaceId ?: return
+        sendUdpMessage("/workspace/$wsId/runningOrPausedCues")
+    }
+
     fun getMasterLevel(cueId: String, callback: (Float) -> Unit) {
         val wsId = currentWorkspaceId ?: return
         pendingLevelCallbacks[cueId] = callback
@@ -566,7 +581,7 @@ class QlabManager {
         scope.launch { disconnectInternal() }
     }
 
-    private suspend fun disconnectInternal() {
+    private suspend fun disconnectInternal(resetState: Boolean = true) {
         timeoutCheckJob?.cancel(); heartbeatJob?.cancel(); receiveJob?.cancel()
         withContext(Dispatchers.IO) { socket?.close() }
         socket = null
@@ -581,7 +596,8 @@ class QlabManager {
         _cueLists.value = emptyList()
         _selectedCueListId.value = null
         _selectedCueId.value = null   // reset so reconnect always triggers a state change
+        _isRunning.value = false
         _isConnected.value = false
-        _connectionState.value = ConnectionState.DISCONNECTED
+        if (resetState) _connectionState.value = ConnectionState.DISCONNECTED
     }
 }

@@ -8,10 +8,12 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import android.os.Build
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.*
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class GoboxViewModel(application: Application) : AndroidViewModel(application) {
 
     private val sharedPrefs = application.getSharedPreferences("gobox_settings", Context.MODE_PRIVATE)
@@ -64,6 +66,10 @@ class GoboxViewModel(application: Application) : AndroidViewModel(application) {
     val selectedCueListId: StateFlow<String?> = _manager
         .flatMapLatest { it?.selectedCueListId ?: flowOf(null) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val isRunning: StateFlow<Boolean> = _manager
+        .flatMapLatest { it?.isRunning ?: flowOf(false) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val selectedCueId: StateFlow<String?> = _manager
         .flatMapLatest { it?.selectedCueId ?: flowOf(null) }
@@ -118,11 +124,11 @@ class GoboxViewModel(application: Application) : AndroidViewModel(application) {
         _ipAddress.value = ip
         _port.value = port
         _password.value = password
-        sharedPrefs.edit()
-            .putString("ip", ip)
-            .putInt("port", port)
-            .putString("password", password)
-            .apply()
+        sharedPrefs.edit {
+            putString("ip", ip)
+            putInt("port", port)
+            putString("password", password)
+        }
     }
 
     fun connect() { _manager.value?.connect(_ipAddress.value, _port.value, _password.value) }

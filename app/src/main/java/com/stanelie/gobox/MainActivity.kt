@@ -5,7 +5,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -29,6 +28,7 @@ import androidx.compose.ui.platform.LocalView
 import android.view.WindowManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -158,6 +158,7 @@ fun MainScreen(viewModel: GoboxViewModel) {
     val playheadIsHidden by viewModel.playheadIsHidden.collectAsState()
     val cueLists by viewModel.cueLists.collectAsState()
     val selectedCueListId by viewModel.selectedCueListId.collectAsState()
+    val isRunning by viewModel.isRunning.collectAsState()
     val savedIp by viewModel.ipAddress.collectAsState()
     val savedPort by viewModel.port.collectAsState()
     val savedPassword by viewModel.password.collectAsState()
@@ -187,25 +188,30 @@ fun MainScreen(viewModel: GoboxViewModel) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val isConnecting = connectionState == ConnectionState.CONNECTING
+                    val connectingTransition = rememberInfiniteTransition(label = "connecting")
+                    val connectingAlpha by connectingTransition.animateFloat(
+                        initialValue = 1f, targetValue = 0.2f,
+                        animationSpec = infiniteRepeatable(tween(400, easing = LinearEasing), RepeatMode.Reverse),
+                        label = "connectBlink"
+                    )
+                    val connectBgColor = when {
+                        isConnecting -> Color(0xFFFF9500)
+                        isConnected && connectionState == ConnectionState.ERROR_NETWORK -> Color(0xFFFF9500)
+                        isConnected -> Color(0xFF34C759)
+                        connectionState == ConnectionState.ERROR_DENIED ||
+                                connectionState == ConnectionState.ERROR_TIMEOUT ||
+                                connectionState == ConnectionState.ERROR_NETWORK -> Color.Red
+                        else -> Color.Gray
+                    }
                     Button(
-                        onClick = { viewModel.toggleConnection() },
-                        enabled = connectionState != ConnectionState.CONNECTING,
-                        modifier = Modifier.width(140.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            backgroundColor = when {
-                                connectionState == ConnectionState.CONNECTING -> Color.Yellow
-                                isConnected && connectionState == ConnectionState.ERROR_NETWORK -> Color(0xFFFF9500)
-                                isConnected -> Color.Green
-                                connectionState == ConnectionState.ERROR_DENIED ||
-                                        connectionState == ConnectionState.ERROR_TIMEOUT ||
-                                        connectionState == ConnectionState.ERROR_NETWORK -> Color.Red
-                                else -> Color.Gray
-                            }
-                        )
+                        onClick = { if (!isConnecting) viewModel.toggleConnection() },
+                        modifier = Modifier.width(110.dp).alpha(if (isConnecting) connectingAlpha else 1f),
+                        colors = ButtonDefaults.buttonColors(backgroundColor = connectBgColor)
                     ) {
                         Text(when {
-                            connectionState == ConnectionState.CONNECTING -> "Connecting..."
-                            isConnected && connectionState == ConnectionState.ERROR_NETWORK -> "Tap to disconnect"
+                            isConnecting -> "Connecting..."
+                            isConnected && connectionState == ConnectionState.ERROR_NETWORK -> "Disconnect"
                             isConnected -> "Connected"
                             connectionState == ConnectionState.ERROR_DENIED -> "Denied"
                             connectionState == ConnectionState.ERROR_TIMEOUT -> "Timeout"
@@ -215,6 +221,9 @@ fun MainScreen(viewModel: GoboxViewModel) {
                     }
 
                     FilterButton(isEnabled = isGroupFilterEnabled, playheadIsHidden = playheadIsHidden, onClick = { viewModel.toggleGroupFilter() })
+
+                    // Running cue indicator — blinks green while any cue is running
+                    RunningIndicator(isRunning = isRunning && isConnected)
 
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
@@ -430,6 +439,29 @@ fun MainScreen(viewModel: GoboxViewModel) {
 }
 
 @Composable
+fun RunningIndicator(isRunning: Boolean) {
+    val infiniteTransition = rememberInfiniteTransition(label = "running")
+    val blinkAlpha by infiniteTransition.animateFloat(
+        initialValue = 1f, targetValue = 0.15f,
+        animationSpec = infiniteRepeatable(tween(400, easing = LinearEasing), RepeatMode.Reverse),
+        label = "blink"
+    )
+    Box(
+        modifier = Modifier.size(36.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .size(14.dp)
+                .background(
+                    color = if (isRunning) Color(0xFF34C759).copy(alpha = blinkAlpha) else Color(0xFF3A3A3C),
+                    shape = CircleShape
+                )
+        )
+    }
+}
+
+@Composable
 fun FilterButton(isEnabled: Boolean, playheadIsHidden: Boolean, onClick: () -> Unit) {
     // Blink when the filter is on and the playhead has landed on a hidden cue
     val infiniteTransition = rememberInfiniteTransition()
@@ -554,20 +586,6 @@ fun CueItem(cue: Cue, index: Int, isSelected: Boolean, groupInfo: CueGroupInfo?,
     }
 }
 
-
-@Composable
-fun BigControlButton(text: String, color: Color, modifier: Modifier = Modifier.width(100.dp).height(75.dp), onClick: () -> Unit) {
-    Button(onClick = onClick, colors = ButtonDefaults.buttonColors(backgroundColor = color), modifier = modifier) {
-        Text(text, color = Color.White, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-fun GoButton(onClick: () -> Unit) {
-    Button(onClick = onClick, colors = ButtonDefaults.buttonColors(backgroundColor = Color.Green), shape = CircleShape, modifier = Modifier.width(80.dp).height(120.dp)) {
-        Text("GO", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-    }
-}
 
 @Composable
 fun SettingsDialog(initialIp: String, initialPort: String, initialPassword: String, onDismiss: () -> Unit, onSave: (String, Int, String) -> Unit) {
