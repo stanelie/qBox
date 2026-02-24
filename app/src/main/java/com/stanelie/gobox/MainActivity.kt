@@ -227,7 +227,7 @@ fun MainScreen(viewModel: GoboxViewModel) {
                     // Running cue indicator — blinks green while any cue is running
                     RunningIndicator(isRunning = isRunning && isConnected)
 
-                    IconButton(onClick = { showSettings = true }) {
+                    IconButton(onClick = { run { showSettings = true } }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                     }
                 }
@@ -352,7 +352,7 @@ fun MainScreen(viewModel: GoboxViewModel) {
                             if (index < 0) return@collect
 
                             // Wait one frame for layout info to be valid
-                            kotlinx.coroutines.delay(50)
+                            delay(50)
 
                             val layout = listState.layoutInfo
                             val viewportHeight = layout.viewportEndOffset - layout.viewportStartOffset
@@ -390,17 +390,12 @@ fun MainScreen(viewModel: GoboxViewModel) {
                                 groupInfo = groupInfoMap[cue.id],
                                 onClick = { viewModel.selectCue(cue) },
                                 onLongClick = if (cue.type == "Audio") ({
-                                    @Suppress("UNUSED_VALUE")
-                                    faderCue = cue
-                                    @Suppress("UNUSED_VALUE")
-                                    faderLoaded = false
-                                    @Suppress("UNUSED_VALUE")
-                                    faderDb = 0f
+                                    run { faderCue = cue }
+                                    run { faderLoaded = false }
+                                    run { faderDb = 0f }
                                     viewModel.getMasterLevel(cue.id) { db ->
-                                        @Suppress("UNUSED_VALUE")
-                                        faderDb = db
-                                        @Suppress("UNUSED_VALUE")
-                                        faderLoaded = true
+                                        run { faderDb = db }
+                                        run { faderLoaded = true }
                                     }
                                 }) else null
                             )
@@ -625,21 +620,19 @@ fun PressAndReleaseButton(
                 detectTapGestures(
                     onPress = {
                         val pressTime = System.currentTimeMillis()
-                        @Suppress("UNUSED_VALUE")
-                        isPressed = true
+                        run { isPressed = true }
 
                         // Fire action on release immediately — independent of visual
                         val released = tryAwaitRelease()
                         if (released) onRelease()
 
-                        // Visual: keep inverted for at least 250ms from press-down.
+                        // Visual: keep inverted for at least 150ms from press-down.
                         // Uses the captured coroutineScope so launch/delay are unrestricted.
                         coroutineScope.launch {
                             val elapsed = System.currentTimeMillis() - pressTime
                             val remaining = 150L - elapsed
                             if (remaining > 0) delay(remaining)
-                            @Suppress("UNUSED_VALUE")
-                            isPressed = false
+                            run { isPressed = false }
                         }
                     }
                 )
