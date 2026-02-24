@@ -38,6 +38,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private val viewModel: GoboxViewModel by viewModels()
@@ -388,11 +390,16 @@ fun MainScreen(viewModel: GoboxViewModel) {
                                 groupInfo = groupInfoMap[cue.id],
                                 onClick = { viewModel.selectCue(cue) },
                                 onLongClick = if (cue.type == "Audio") ({
+                                    @Suppress("UNUSED_VALUE")
                                     faderCue = cue
+                                    @Suppress("UNUSED_VALUE")
                                     faderLoaded = false
+                                    @Suppress("UNUSED_VALUE")
                                     faderDb = 0f
                                     viewModel.getMasterLevel(cue.id) { db ->
+                                        @Suppress("UNUSED_VALUE")
                                         faderDb = db
+                                        @Suppress("UNUSED_VALUE")
                                         faderLoaded = true
                                     }
                                 }) else null
@@ -403,23 +410,27 @@ fun MainScreen(viewModel: GoboxViewModel) {
             }
 
             Row(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 12.dp).height(75.dp)) {
-                Button(
-                    onClick = { viewModel.panic() },
-                    colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFFFF3B30)),
+                PressAndReleaseButton(
+                    label = "PANIC",
+                    normalBg = Color(0xFFFF3B30),
+                    normalText = Color.White,
+                    pressedBg = Color.White,
+                    pressedText = Color(0xFFFF3B30),
+                    fontSize = 18,
                     modifier = Modifier.weight(1f).fillMaxHeight(),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("PANIC", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
-                }
+                    onRelease = { viewModel.panic() }
+                )
                 Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = { viewModel.go() },
-                    colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF34C759)),
+                PressAndReleaseButton(
+                    label = "GO",
+                    normalBg = Color(0xFF34C759),
+                    normalText = Color.White,
+                    pressedBg = Color.White,
+                    pressedText = Color(0xFF34C759),
+                    fontSize = 24,
                     modifier = Modifier.weight(2f).fillMaxHeight(),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("GO", fontWeight = FontWeight.Bold, fontSize = 24.sp, color = Color.White)
-                }
+                    onRelease = { viewModel.go() }
+                )
             }
         }
 
@@ -586,6 +597,57 @@ fun CueItem(cue: Cue, index: Int, isSelected: Boolean, groupInfo: CueGroupInfo?,
     }
 }
 
+
+@Composable
+fun PressAndReleaseButton(
+    label: String,
+    normalBg: Color,
+    normalText: Color,
+    pressedBg: Color,
+    pressedText: Color,
+    fontSize: Int,
+    modifier: Modifier = Modifier,
+    onRelease: () -> Unit
+) {
+    var isPressed by remember { mutableStateOf(false) }
+    val bg   = if (isPressed) pressedBg   else normalBg
+    val text = if (isPressed) pressedText else normalText
+    // rememberCoroutineScope() gives us a stable CoroutineScope tied to this composable's
+    // lifecycle — we pass it explicitly into the pointerInput lambda to sidestep the
+    // restricted-scope limitations of onPress and awaitPointerEventScope.
+    val coroutineScope = rememberCoroutineScope()
+
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .background(bg, RoundedCornerShape(8.dp))
+            .pointerInput(onRelease) {
+                detectTapGestures(
+                    onPress = {
+                        val pressTime = System.currentTimeMillis()
+                        @Suppress("UNUSED_VALUE")
+                        isPressed = true
+
+                        // Fire action on release immediately — independent of visual
+                        val released = tryAwaitRelease()
+                        if (released) onRelease()
+
+                        // Visual: keep inverted for at least 250ms from press-down.
+                        // Uses the captured coroutineScope so launch/delay are unrestricted.
+                        coroutineScope.launch {
+                            val elapsed = System.currentTimeMillis() - pressTime
+                            val remaining = 150L - elapsed
+                            if (remaining > 0) delay(remaining)
+                            @Suppress("UNUSED_VALUE")
+                            isPressed = false
+                        }
+                    }
+                )
+            }
+    ) {
+        Text(label, fontWeight = FontWeight.Bold, fontSize = fontSize.sp, color = text)
+    }
+}
 
 @Composable
 fun SettingsDialog(initialIp: String, initialPort: String, initialPassword: String, onDismiss: () -> Unit, onSave: (String, Int, String) -> Unit) {
