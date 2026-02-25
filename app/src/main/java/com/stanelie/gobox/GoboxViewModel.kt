@@ -57,7 +57,7 @@ class GoboxViewModel(application: Application) : AndroidViewModel(application) {
 
     val cues: StateFlow<List<Cue>> = _manager
         .flatMapLatest { it?.cues ?: flowOf(emptyList()) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val cueLists: StateFlow<List<CueList>> = _manager
         .flatMapLatest { it?.cueLists ?: flowOf(emptyList()) }
@@ -94,23 +94,19 @@ class GoboxViewModel(application: Application) : AndroidViewModel(application) {
             if (!filterEnabled) {
                 cueList
             } else {
-                val simultaneousGroupIds = cueList
-                    .filter { it.isGroup && it.groupMode == "simultaneous" }
-                    .map { it.id }
-                    .toSet()
                 val hiddenIds = mutableSetOf<String>()
-                val activeSimultaneousDepths = ArrayDeque<Int>()
+                val activeGroupDepths = ArrayDeque<Int>()
                 for (cue in cueList) {
-                    while (activeSimultaneousDepths.isNotEmpty() &&
-                        cue.depth <= activeSimultaneousDepths.last()) {
-                        activeSimultaneousDepths.removeLast()
+                    while (activeGroupDepths.isNotEmpty() &&
+                        cue.depth <= activeGroupDepths.last()) {
+                        activeGroupDepths.removeLast()
                     }
-                    if (activeSimultaneousDepths.isNotEmpty()) hiddenIds.add(cue.id)
-                    if (cue.id in simultaneousGroupIds) activeSimultaneousDepths.addLast(cue.depth)
+                    if (activeGroupDepths.isNotEmpty()) hiddenIds.add(cue.id)
+                    if (cue.isGroup) activeGroupDepths.addLast(cue.depth)
                 }
                 cueList.filter { it.id !in hiddenIds }
             }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val playheadIsHidden: StateFlow<Boolean> = filteredCues
         .combine(selectedCueId) { filtered, selId ->
@@ -118,7 +114,33 @@ class GoboxViewModel(application: Application) : AndroidViewModel(application) {
             else filtered.none { it.id == selId }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-    fun toggleGroupFilter() { _isGroupFilterEnabled.value = !_isGroupFilterEnabled.value }
+    // The cue ID to highlight in the UI. When the filter is active and QLab's playhead
+    // is on a hidden child cue, we walk up the unfiltered list to find the nearest
+    // visible ancestor (the collapsed group header) and highlight that instead.
+    val displayedCueId: StateFlow<String?> = combine(
+        cues, filteredCues, selectedCueId
+    ) { allCues, filtered, selId ->
+        if (selId == null) return@combine null
+        if (!_isGroupFilterEnabled.value) return@combine selId
+        // If the selected cue is already visible in the filtered list, use it directly
+        if (filtered.any { it.id == selId }) return@combine selId
+        // Walk backward through the full list from the selected cue to find
+        // the nearest ancestor that IS visible in the filtered list
+        val selIndex = allCues.indexOfFirst { it.id == selId }
+        if (selIndex < 0) return@combine selId
+        val selDepth = allCues[selIndex].depth
+        for (i in selIndex - 1 downTo 0) {
+            val candidate = allCues[i]
+            if (candidate.depth < selDepth && filtered.any { it.id == candidate.id }) {
+                return@combine candidate.id
+            }
+        }
+        selId  // fallback: no visible ancestor found, keep original
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun toggleGroupFilter() {
+        _isGroupFilterEnabled.value = !_isGroupFilterEnabled.value
+    }
 
     fun updateSettings(ip: String, port: Int, password: String) {
         _ipAddress.value = ip
@@ -143,7 +165,9 @@ class GoboxViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelFaderSends() { _manager.value?.cancelFaderSends() }
     fun go() { _manager.value?.go() }
     fun panic() { _manager.value?.panic() }
-    fun selectCue(cue: Cue) { _manager.value?.selectCue(cue) }
+    fun selectCue(cue: Cue) {
+        _manager.value?.selectCue(cue)
+    }
     fun selectCueList(cueListId: String) { _manager.value?.selectCueList(cueListId) }
 
     override fun onCleared() {

@@ -156,6 +156,7 @@ fun MainScreen(viewModel: GoboxViewModel) {
     val connectionError by viewModel.connectionError.collectAsState()
     val cues by viewModel.filteredCues.collectAsState()
     val selectedCueId by viewModel.selectedCueId.collectAsState()
+    val displayedCueId by viewModel.displayedCueId.collectAsState()
     val isGroupFilterEnabled by viewModel.isGroupFilterEnabled.collectAsState()
     val playheadIsHidden by viewModel.playheadIsHidden.collectAsState()
     val cueLists by viewModel.cueLists.collectAsState()
@@ -175,8 +176,8 @@ fun MainScreen(viewModel: GoboxViewModel) {
         }
     }
 
-    var showSettings by remember { mutableStateOf(false) }
-    var showCueListDropdown by remember { mutableStateOf(false) }
+    val showSettings = remember { mutableStateOf(false) }
+    val showCueListDropdown = remember { mutableStateOf(false) }
     val groupInfoMap = remember(cues) { computeGroupInfo(cues) }
 
     Scaffold(
@@ -227,7 +228,7 @@ fun MainScreen(viewModel: GoboxViewModel) {
                     // Running cue indicator — blinks green while any cue is running
                     RunningIndicator(isRunning = isRunning && isConnected)
 
-                    IconButton(onClick = { run { showSettings = true } }) {
+                    IconButton(onClick = { showSettings.value = true }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings", tint = Color.White)
                     }
                 }
@@ -240,18 +241,18 @@ fun MainScreen(viewModel: GoboxViewModel) {
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
             if (isConnected && cueLists.isNotEmpty()) {
                 Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    OutlinedButton(onClick = { showCueListDropdown = true }, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { showCueListDropdown.value = true }, modifier = Modifier.fillMaxWidth()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val selectedList = cueLists.find { it.id == selectedCueListId }
                             Text(text = selectedList?.name ?: "Select Cue List", modifier = Modifier.weight(1f))
                             Icon(Icons.Default.ArrowDropDown, contentDescription = null)
                         }
                     }
-                    DropdownMenu(expanded = showCueListDropdown, onDismissRequest = { showCueListDropdown = false }) {
+                    DropdownMenu(expanded = showCueListDropdown.value, onDismissRequest = { showCueListDropdown.value = false }) {
                         cueLists.forEach { cueList ->
                             DropdownMenuItem(onClick = {
                                 viewModel.selectCueList(cueList.id)
-                                showCueListDropdown = false
+                                showCueListDropdown.value = false
                             }) {
                                 Text(cueList.name)
                             }
@@ -341,8 +342,9 @@ fun MainScreen(viewModel: GoboxViewModel) {
                     // has scrolled the playhead above the midpoint we leave it alone.
                     LaunchedEffect(listState) {
                         var lastSelectedId: String? = null
-                        // Combine selectedCueId AND cues so we always have a fresh list index
-                        snapshotFlow { selectedCueId to cues }.collect { (cueId, cueList) ->
+                        // Use displayedCueId so scroll targets the visible row even when
+                        // the real playhead is on a hidden child cue inside a collapsed group
+                        snapshotFlow { displayedCueId to cues }.collect { (cueId, cueList) ->
                             if (cueId == null) return@collect
                             // Only scroll when the playhead actually changed
                             if (cueId == lastSelectedId) return@collect
@@ -382,11 +384,11 @@ fun MainScreen(viewModel: GoboxViewModel) {
                     }
 
                     LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                        itemsIndexed(cues) { index, cue ->
+                        itemsIndexed(cues, key = { _, cue -> cue.id }) { index, cue ->
                             CueItem(
                                 cue = cue,
                                 index = index,
-                                isSelected = cue.id == selectedCueId,
+                                isSelected = cue.id == displayedCueId,
                                 groupInfo = groupInfoMap[cue.id],
                                 onClick = { viewModel.selectCue(cue) },
                                 onLongClick = if (cue.type == "Audio") ({
@@ -429,15 +431,15 @@ fun MainScreen(viewModel: GoboxViewModel) {
             }
         }
 
-        if (showSettings) {
+        if (showSettings.value) {
             SettingsDialog(
                 initialIp = savedIp,
                 initialPort = savedPort.toString(),
                 initialPassword = savedPassword,
-                onDismiss = { showSettings = false },
+                onDismiss = { showSettings.value = false },
                 onSave = { ip, port, password ->
                     viewModel.updateSettings(ip, port, password)
-                    showSettings = false
+                    showSettings.value = false
                 }
             )
         }
@@ -604,9 +606,9 @@ fun PressAndReleaseButton(
     modifier: Modifier = Modifier,
     onRelease: () -> Unit
 ) {
-    var isPressed by remember { mutableStateOf(false) }
-    val bg   = if (isPressed) pressedBg   else normalBg
-    val text = if (isPressed) pressedText else normalText
+    val isPressed = remember { mutableStateOf(false) }
+    val bg   = if (isPressed.value) pressedBg   else normalBg
+    val text = if (isPressed.value) pressedText else normalText
     // rememberCoroutineScope() gives us a stable CoroutineScope tied to this composable's
     // lifecycle — we pass it explicitly into the pointerInput lambda to sidestep the
     // restricted-scope limitations of onPress and awaitPointerEventScope.
@@ -620,7 +622,7 @@ fun PressAndReleaseButton(
                 detectTapGestures(
                     onPress = {
                         val pressTime = System.currentTimeMillis()
-                        run { isPressed = true }
+                        isPressed.value = true
 
                         // Fire action on release immediately — independent of visual
                         val released = tryAwaitRelease()
@@ -632,7 +634,7 @@ fun PressAndReleaseButton(
                             val elapsed = System.currentTimeMillis() - pressTime
                             val remaining = 150L - elapsed
                             if (remaining > 0) delay(remaining)
-                            run { isPressed = false }
+                            isPressed.value = false
                         }
                     }
                 )
