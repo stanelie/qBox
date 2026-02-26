@@ -155,7 +155,6 @@ fun MainScreen(viewModel: GoboxViewModel) {
     val connectionState by viewModel.connectionState.collectAsState()
     val connectionError by viewModel.connectionError.collectAsState()
     val cues by viewModel.filteredCues.collectAsState()
-    val selectedCueId by viewModel.selectedCueId.collectAsState()
     val displayedCueId by viewModel.displayedCueId.collectAsState()
     val isGroupFilterEnabled by viewModel.isGroupFilterEnabled.collectAsState()
     val playheadIsHidden by viewModel.playheadIsHidden.collectAsState()
@@ -574,6 +573,27 @@ fun CueItem(cue: Cue, index: Int, isSelected: Boolean, groupInfo: CueGroupInfo?,
                     val rightCap = if (layerIndex == 0) right else size.width
                     drawLine(c, Offset(left, bottom), Offset(rightCap, bottom), stroke)
                 }
+            }
+        }
+
+        // Disarmed overlay: pale grey diagonal stripes
+        if (!cue.isArmed) {
+            val stripeColor = Color(0x66CCCCCC) // brighter grey
+            val stripeWidth = 1.dp.toPx()
+            val gap = 5.dp.toPx()
+            val pitch = stripeWidth + gap
+            val h = size.height
+            val w = size.width
+            // Draw diagonal lines at 45° across the full row
+            var x = -h
+            while (x < w + h) {
+                drawLine(
+                    color = stripeColor,
+                    start = Offset(x, h),
+                    end = Offset(x + h, 0f),
+                    strokeWidth = stripeWidth
+                )
+                x += pitch
             }
         }
     }) {

@@ -26,7 +26,8 @@ data class Cue(
     val type: String,
     val isGroup: Boolean = false,
     val groupMode: String? = null,
-    val depth: Int = 0
+    val depth: Int = 0,
+    val isArmed: Boolean = true
 )
 
 data class CueList(
@@ -48,6 +49,7 @@ data class CueData(
     @SerializedName("displayName") val displayName: String?,
     @SerializedName("type") val type: String?,
     @SerializedName("mode") val mode: Int?,
+    @SerializedName("armed") val armed: Boolean?,
     @SerializedName("cues") val cues: List<CueData>?
 )
 
@@ -566,9 +568,10 @@ class QlabManager {
                 ?: cueData.listName?.takeIf { it.isNotEmpty() }
                 ?: cueData.displayName ?: "",
             type,
-            isGroup || isCueList,  // still shown as a group visually
+            isGroup || isCueList,
             null,
-            depth
+            depth,
+            isArmed = cueData.armed ?: true
         ))
         if ((isGroup || isCueList) && cueListId != null) groupCueListMap[id] = cueListId
         // Only recurse into true Group cues — not into nested Cue Lists
