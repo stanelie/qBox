@@ -453,90 +453,51 @@ class QlabManager {
                 address.contains("/connect") && address.contains("/workspace/") -> {
                     val wsId = currentWorkspaceId ?: return
                     Log.d("QlabManager", "Workspace connect reply: status=${reply.status}")
-                    // Note: denied/non-ok statuses are caught by the early-return guards above,
-                    // so reaching here guarantees status is "ok" or "ok_currentpasscode".
                     startHeartbeat()
                     sendOscMessage("/alwaysReply", listOf(1))
                     sendOscMessage("/workspace/$wsId/updates", listOf(1))
-                    // QLab 5+: /cueLists returns full nested cue tree in one response (TCP handles size)
-                    // QLab 4:  /cueListsIDs + individual /children requests
-                    if (qlabMajorVersion >= 5) {
-                        Log.d("QlabManager", "QLab 5: requesting /cueLists (full tree)")
-                        sendOscMessage("/workspace/$wsId/cueLists")
-                    } else {
-                        Log.d("QlabManager", "QLab 4: requesting /cueListsIDs then /children per list")
-                        sendOscMessage("/workspace/$wsId/cueListsIDs")
-                    }
-                }
-                address.contains("/cueListsIDs") -> {
-                    // QLab 4 only path
-                    Log.d("QlabManager", "cueListsIDs reply: data=${reply.data?.toString()?.take(200)}")
-                    val data = reply.data ?: return
-                    if (data.isJsonArray) {
-                        val wsId = currentWorkspaceId ?: return
-                        val ids = data.asJsonArray.mapNotNull { it.asJsonObject.get("uniqueID")?.asString }
-                        Log.d("QlabManager", "Got ${ids.size} cue list IDs: $ids")
-                        ids.forEach { id -> sendOscMessage("/workspace/$wsId/cue_id/$id/children") }
-                        sendOscMessage("/workspace/$wsId/cueLists/shallow")
-                    }
-                }
-                address.contains("/cueLists/shallow") -> {
-                    // QLab 4: name-only companion to /cueListsIDs
-                    Log.d("QlabManager", "cueLists/shallow reply: data=${reply.data?.toString()?.take(200)}")
-                    val data = reply.data ?: return
-                    if (data.isJsonArray) {
-                        val cueListsData: List<CueData> = gson.fromJson(data, object : TypeToken<List<CueData>>() {}.type)
-                        val lists = cueListsData.mapNotNull { cl ->
-                            val clId = cl.uniqueID ?: return@mapNotNull null
-                            CueList(clId, cl.name ?: cl.listName ?: "Cue List")
-                        }
-                        if (lists.isNotEmpty()) {
-                            _cueLists.value = lists
-                            if (_selectedCueListId.value == null) _selectedCueListId.value = lists[0].id
-                        }
-                    }
+                    // Both QLab 4 and 5 support /cueLists.
+                    // QLab 5 returns the full nested cue tree; QLab 4 returns shallow list objects
+                    // with empty .cues arrays, so we follow up with /children per list.
+                    sendOscMessage("/workspace/$wsId/cueLists")
                 }
                 address.matches(Regex(".*/workspace/[^/]+/cueLists$")) -> {
-                    // QLab 5: full nested cue tree — cue list names AND all cues in one response
-                    Log.d("QlabManager", "cueLists (full) reply: ${reply.data?.toString()?.take(200)}")
                     val data = reply.data ?: return
                     if (!data.isJsonArray) return
                     val wsId = currentWorkspaceId ?: return
                     val cueListsData: List<CueData> = gson.fromJson(data, object : TypeToken<List<CueData>>() {}.type)
 
-                    // Build cue list metadata
                     val lists = cueListsData.mapNotNull { cl ->
                         val clId = cl.uniqueID ?: return@mapNotNull null
-                        CueList(clId, cl.name ?: cl.listName ?: "Cue List")
+                        CueList(clId, cl.name ?: cl.listName ?: cl.displayName ?: "Cue List")
                     }
-                    Log.d("QlabManager", "cueLists full: ${lists.size} lists found")
                     if (lists.isEmpty()) return
 
-                    // Populate cue cache from nested data — each top-level entry IS a cue list,
-                    // its children are in .cues
+                    _cueLists.value = lists
+                    if (_selectedCueListId.value == null) _selectedCueListId.value = lists[0].id
+
                     cueListsData.forEach { clData ->
                         val clId = clData.uniqueID ?: return@forEach
-                        val cuesForList = mutableListOf<Cue>()
-                        clData.cues?.forEach { flattenCues(it, cuesForList, cueListId = clId) }
-                        cueListCache[clId] = cuesForList
-                        Log.d("QlabManager", "  List $clId (${clData.name}): ${cuesForList.size} cues flattened")
-
-                        // Request group modes for all group cues in this list
-                        cuesForList.filter { it.isGroup }.forEach { cue ->
-                            sendOscMessage("/workspace/$wsId/cue_id/${cue.id}/mode")
+                        val nestedCues = clData.cues
+                        if (!nestedCues.isNullOrEmpty()) {
+                            // QLab 5: full tree in one shot
+                            val cuesForList = mutableListOf<Cue>()
+                            nestedCues.forEach { flattenCues(it, cuesForList, cueListId = clId) }
+                            cueListCache[clId] = cuesForList
+                            cuesForList.filter { it.isGroup }.forEach { cue ->
+                                sendOscMessage("/workspace/$wsId/cue_id/${cue.id}/mode")
+                            }
+                            sendOscMessage("/workspace/$wsId/cue_id/$clId/playbackPosition")
+                        } else {
+                            // QLab 4: shallow — request children separately
+                            sendOscMessage("/workspace/$wsId/cue_id/$clId/children")
                         }
-                        // Request playback position for this list
-                        sendOscMessage("/workspace/$wsId/cue_id/$clId/playbackPosition")
                     }
 
-                    _cueLists.value = lists
-                    if (_selectedCueListId.value == null) {
-                        val firstId = lists[0].id
-                        _selectedCueListId.value = firstId
-                        _cues.value = cueListCache[firstId] ?: emptyList()
-                    } else {
-                        // Re-apply selected list from cache (e.g. on reconnect)
-                        _cues.value = cueListCache[_selectedCueListId.value] ?: emptyList()
+                    // Push cues for selected list if already cached (QLab 5 path)
+                    val selId = _selectedCueListId.value
+                    if (selId != null && cueListCache.containsKey(selId)) {
+                        _cues.value = cueListCache[selId] ?: emptyList()
                     }
                 }
                 address.contains("workspaces") -> {
@@ -578,12 +539,12 @@ class QlabManager {
             cueArray.forEach { flattenCues(it, cuesForList, cueListId = cueListId) }
         }
         cueListCache[cueListId] = cuesForList
+        // If no cue list is selected yet (QLab 4: shallow reply may not have arrived),
+        // select this one so cues are visible immediately
+        if (_selectedCueListId.value == null) _selectedCueListId.value = cueListId
         if (_selectedCueListId.value == cueListId) _cues.value = cuesForList
 
-        val wsId = currentWorkspaceId ?: run {
-            Log.w("QlabManager", "handleCueListChildren: currentWorkspaceId is null")
-            return
-        }
+        val wsId = currentWorkspaceId ?: return
         cuesForList.filter { it.isGroup }.forEach { cue ->
             sendOscMessage("/workspace/$wsId/cue_id/${cue.id}/mode")
         }
