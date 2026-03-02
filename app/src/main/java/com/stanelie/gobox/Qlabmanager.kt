@@ -457,7 +457,9 @@ class QlabManager {
                     Log.d("QlabManager", "Workspace connect reply: status=${reply.status}")
                     startHeartbeat()
                     sendOscMessage("/alwaysReply", listOf(1))
-                    sendOscMessage("/workspace/$wsId/updates", listOf(1))
+                    // QLab 5 TCP: subscription must be sent WITHOUT workspace prefix.
+                    // QLabKit.objc (Figure53's own library) confirms: workspace:NO, arg=YES (integer 1).
+                    sendOscMessage("/updates", listOf(1))
                     // Both QLab 4 and 5 support /cueLists.
                     // QLab 5 returns the full nested cue tree; QLab 4 returns shallow list objects
                     // with empty .cues arrays, so we follow up with /children per list.
