@@ -121,10 +121,35 @@ class QlabManager {
     private var qlabHost: String = ""
     private val oscPort = 53000  // QLab TCP OSC port
 
+    // Auto-reconnect state
+    private var userWantsConnected = false
+    private var reconnectAttempt = 0
+    private var reconnectJob: Job? = null
+
     private val cueListCache = mutableMapOf<String, List<Cue>>()
     private val groupCueListMap = mutableMapOf<String, String>()
 
+    /** Schedule an automatic reconnect with exponential backoff. Only fires if the user
+     *  hasn't explicitly disconnected. Backoff: 1s, 2s, 4s, 8s, 16s, 30s (cap). */
+    private fun triggerReconnect() {
+        if (!userWantsConnected) return
+        reconnectJob?.cancel()
+        reconnectAttempt++
+        val delaySec = minOf(1 shl (reconnectAttempt - 1).coerceAtMost(4), 30)
+        reconnectJob = scope.launch {
+            _connectionError.value = "Connection lost. Reconnecting in ${delaySec}s\u2026 (attempt $reconnectAttempt)"
+            delay(delaySec * 1000L)
+            if (isActive) connect(qlabHost, 0, currentPassword)
+        }
+    }
+
     fun connect(ip: String, @Suppress("UNUSED_PARAMETER") port: Int, password: String?) {
+        reconnectJob?.cancel()
+        // Only reset the backoff counter on a fresh user-initiated connect; leave it
+        // unchanged when called internally by the auto-reconnect job so the delay keeps
+        // growing across successive failed reconnect attempts.
+        if (!userWantsConnected) reconnectAttempt = 0
+        userWantsConnected = true
         currentPassword = password
         qlabHost = ip
         Log.d("QlabManager", "connect() called: ip=$ip port=$oscPort (TCP) password=${if (password.isNullOrEmpty()) "(none)" else "(set)"}")
@@ -173,13 +198,21 @@ class QlabManager {
             } catch (e: java.net.SocketTimeoutException) {
                 Log.e("QlabManager", "connect() FAILED — TCP timeout: ${e.message}", e)
                 _connectionState.value = ConnectionState.ERROR_TIMEOUT
-                _connectionError.value = "Timed out connecting to $ip. Check the IP and that QLab is running."
                 _isConnected.value = false
+                if (reconnectAttempt > 0) {
+                    triggerReconnect()  // Keep retrying if we're in an auto-reconnect flow
+                } else {
+                    _connectionError.value = "Timed out connecting to $ip. Check the IP and that QLab is running."
+                }
             } catch (e: Exception) {
                 Log.e("QlabManager", "connect() FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
                 _connectionState.value = ConnectionState.ERROR_NETWORK
-                _connectionError.value = "Connection failed: ${e.message}"
                 _isConnected.value = false
+                if (reconnectAttempt > 0) {
+                    triggerReconnect()
+                } else {
+                    _connectionError.value = "Connection failed: ${e.message}"
+                }
             }
         }
     }
@@ -192,14 +225,21 @@ class QlabManager {
             if (!hasReceivedAnyResponse) {
                 Log.e("QlabManager", "TIMEOUT: No response from QLab after 5s. Target was $qlabHost:$oscPort")
                 _connectionState.value = ConnectionState.ERROR_TIMEOUT
-                _connectionError.value = "No response from $qlabHost after 5s. Check that QLab is open and TCP OSC is enabled in Workspace Settings."
-                disconnectInternal()
+                _isConnected.value = false
+                if (reconnectAttempt > 0) {
+                    disconnectInternal(resetState = false)
+                    triggerReconnect()
+                } else {
+                    _connectionError.value = "No response from $qlabHost after 5s. Check that QLab is open and TCP OSC is enabled in Workspace Settings."
+                    disconnectInternal()
+                }
             }
         }
     }
 
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
+        reconnectAttempt = 0  // Reset backoff — we have a working connection again
         _isConnected.value = true
         _connectionState.value = ConnectionState.CONNECTED
         _connectionError.value = null
@@ -209,9 +249,11 @@ class QlabManager {
                 if (_isConnected.value && hasReceivedAnyResponse) {
                     sendOscMessage("/thump")
                     if (System.currentTimeMillis() - lastMessageTime > 15000) {
+                        Log.w("QlabManager", "Heartbeat timeout — no response for 15s")
                         _connectionState.value = ConnectionState.ERROR_NETWORK
-                        _connectionError.value = "Lost connection to QLab — no response for 15s. Tap to reconnect."
                         _isConnected.value = false
+                        triggerReconnect()
+                        break
                     }
                 }
                 delay(4000L)
@@ -284,15 +326,15 @@ class QlabManager {
                 if (isActive) {
                     Log.w("QlabManager", "TCP connection closed by QLab (EOF)")
                     _connectionState.value = ConnectionState.ERROR_NETWORK
-                    _connectionError.value = "QLab closed the connection. Tap to reconnect."
                     _isConnected.value = false
+                    triggerReconnect()
                 }
             } catch (e: Exception) {
                 if (isActive) {
                     Log.e("QlabManager", "startReceiving EXCEPTION: ${e.javaClass.simpleName}: ${e.message}", e)
                     _connectionState.value = ConnectionState.ERROR_NETWORK
-                    _connectionError.value = "Network error: ${e.message}. Tap to reconnect."
                     _isConnected.value = false
+                    triggerReconnect()
                 }
             }
         }
@@ -717,6 +759,10 @@ class QlabManager {
     }
 
     fun disconnect() {
+        userWantsConnected = false
+        reconnectAttempt = 0
+        reconnectJob?.cancel()
+        reconnectJob = null
         scope.launch { disconnectInternal() }
     }
 
