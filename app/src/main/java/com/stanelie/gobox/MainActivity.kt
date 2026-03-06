@@ -38,6 +38,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 
@@ -344,7 +346,11 @@ fun MainScreen(viewModel: GoboxViewModel) {
                         // Use displayedCueId so scroll targets the visible row even when
                         // the real playhead is on a hidden child cue inside a collapsed group
                         snapshotFlow { displayedCueId to cues }.collect { (cueId, cueList) ->
-                            if (cueId == null) return@collect
+                            if (cueId == null) {
+                                // Reset on disconnect so reconnect re-scrolls even if same cue ID
+                                lastSelectedId = null
+                                return@collect
+                            }
                             // Only scroll when the playhead actually changed
                             if (cueId == lastSelectedId) return@collect
                             lastSelectedId = cueId
@@ -357,27 +363,36 @@ fun MainScreen(viewModel: GoboxViewModel) {
 
                             val layout = listState.layoutInfo
                             val viewportHeight = layout.viewportEndOffset - layout.viewportStartOffset
-                            if (viewportHeight <= 0) {
-                                listState.animateScrollToItem(index)
-                                return@collect
-                            }
 
-                            val visibleItems = layout.visibleItemsInfo
-                            val selectedItem = visibleItems.firstOrNull { it.index == index }
-
-                            if (selectedItem == null) {
-                                // Off-screen: scroll so item lands at the midpoint
-                                val avgItemHeight = if (visibleItems.isNotEmpty())
-                                    visibleItems.sumOf { it.size } / visibleItems.size else 80
-                                val offset = -(viewportHeight / 2 - avgItemHeight / 2)
-                                listState.animateScrollToItem(index, scrollOffset = offset)
-                            } else {
-                                // On-screen: only scroll if it has drifted below the midpoint
-                                val itemMid = selectedItem.offset + selectedItem.size / 2
-                                if (itemMid > viewportHeight / 2) {
-                                    val offset = -(viewportHeight / 2 - selectedItem.size / 2)
-                                    listState.animateScrollToItem(index, scrollOffset = offset)
+                            try {
+                                if (viewportHeight <= 0) {
+                                    listState.animateScrollToItem(index)
+                                    return@collect
                                 }
+
+                                val visibleItems = layout.visibleItemsInfo
+                                val selectedItem = visibleItems.firstOrNull { it.index == index }
+
+                                if (selectedItem == null) {
+                                    // Off-screen: scroll so item lands at the midpoint
+                                    val avgItemHeight = if (visibleItems.isNotEmpty())
+                                        visibleItems.sumOf { it.size } / visibleItems.size else 80
+                                    val offset = -(viewportHeight / 2 - avgItemHeight / 2)
+                                    listState.animateScrollToItem(index, scrollOffset = offset)
+                                } else {
+                                    // On-screen: only scroll if it has drifted below the midpoint
+                                    val itemMid = selectedItem.offset + selectedItem.size / 2
+                                    if (itemMid > viewportHeight / 2) {
+                                        val offset = -(viewportHeight / 2 - selectedItem.size / 2)
+                                        listState.animateScrollToItem(index, scrollOffset = offset)
+                                    }
+                                }
+                            } catch (e: CancellationException) {
+                                // Re-throw if the coroutine itself is being cancelled (composable
+                                // leaving composition). If isActive is true, the exception came
+                                // from a user gesture interrupting the scroll animation — swallow
+                                // it so the collect loop stays alive for the next playhead change.
+                                if (!isActive) throw e
                             }
                         }
                     }
