@@ -3,7 +3,7 @@
 ### Another Qlab remote for Android, thanks to Claude.AI
 
 Usage :
-- long press on an audio cue to adjust the master level
+- long press on an audio cue to adjust its master level
 - press the "Collapse" button to collapse the timeline or all at once group cues into one row only
 
 Enjoy!
