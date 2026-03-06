@@ -4,6 +4,6 @@
 
 Usage :
 - long press on an audio cue to adjust the master level
-- press the "Collapse" button to collapse the timeline cues into one row only
+- press the "Collapse" button to collapse the timeline or all at once group cues into one row only
 
 Enjoy!
